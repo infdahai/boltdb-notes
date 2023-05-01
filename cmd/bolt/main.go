@@ -76,6 +76,8 @@ type Main struct {
 	Stderr io.Writer
 }
 
+// main 记录 shell的三个io文件
+
 // NewMain returns a new instance of Main connect to the standard input/output.
 func NewMain() *Main {
 	return &Main{
