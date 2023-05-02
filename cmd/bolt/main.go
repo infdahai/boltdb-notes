@@ -76,6 +76,7 @@ type Main struct {
 	Stderr io.Writer
 }
 
+// Main 只记录了输出流格式
 // main 记录 shell的三个io文件
 
 // NewMain returns a new instance of Main connect to the standard input/output.
@@ -97,6 +98,8 @@ func (m *Main) Run(args ...string) error {
 
 	// Execute command.
 	switch args[0] {
+	// 这里做了个简单的命令推断(arg parse)
+	// 每一个命令实例都标记了IO流，使用Run接口
 	case "help":
 		fmt.Fprintln(m.Stderr, m.Usage())
 		return ErrUsage
@@ -122,6 +125,7 @@ func (m *Main) Run(args ...string) error {
 }
 
 // Usage returns the help message.
+// 帮助信息函数, help 调用
 func (m *Main) Usage() string {
 	return strings.TrimLeft(`
 Bolt is a tool for inspecting bolt databases.
@@ -168,6 +172,7 @@ func (cmd *CheckCommand) Run(args ...string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	} else if *help {
+		// 为啥这里 help=true时打印错误
 		fmt.Fprintln(cmd.Stderr, cmd.Usage())
 		return ErrUsage
 	}

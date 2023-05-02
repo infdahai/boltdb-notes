@@ -53,8 +53,11 @@ type Bucket struct {
 // This is stored as the "value" of a bucket key. If the bucket is small enough,
 // then its root page can be stored inline in the "value", after the bucket
 // header. In the case of inline buckets, the "root" will be 0.
+// 桶用于表示 文件。
 type bucket struct {
-	root     pgid   // page id of the bucket's root-level page
+	// 存储桶的根级页面的页面 ID
+	root pgid // page id of the bucket's root-level page
+	// 同步增长，大概是记录当前的node数量
 	sequence uint64 // monotonically incrementing, used by NextSequence()
 }
 

@@ -16,10 +16,12 @@ import (
 
 // The largest step that can be taken when remapping the mmap.
 const maxMmapStep = 1 << 30 // 1GB
+// mmap 指定空间 1GB
 
 // The data file format version.
 const version = 2
 
+// 幻值
 // Represents a marker value to indicate that a file is a Bolt DB.
 const magic uint32 = 0xED0CDAED
 
@@ -27,26 +29,36 @@ const magic uint32 = 0xED0CDAED
 // syncing changes to a file.  This is required as some operating systems,
 // such as OpenBSD, do not have a unified buffer cache (UBC) and writes
 // must be synchronized using the msync(2) syscall.
+// openbsd 系统由于缺乏统一的buffer cache(write to block pos)
+// 因此将会直接sync everything.
 const IgnoreNoSync = runtime.GOOS == "openbsd"
 
 // Default values if not set in a DB instance.
 const (
-	DefaultMaxBatchSize  int = 1000
-	DefaultMaxBatchDelay     = 10 * time.Millisecond
-	DefaultAllocSize         = 16 * 1024 * 1024
+	// 1000 ops in one batch
+	DefaultMaxBatchSize int = 1000
+
+	//0.01s(批处理 延迟)
+	DefaultMaxBatchDelay = 10 * time.Millisecond
+
+	// 16 mb
+	DefaultAllocSize = 16 * 1024 * 1024
 )
 
 // default page size for db is set to the OS page size.
+// 系统调用找一个 os page size
 var defaultPageSize = os.Getpagesize()
 
 // DB represents a collection of buckets persisted to a file on disk.
 // All data access is performed through transactions which can be obtained through the DB.
 // All the functions on DB will return a ErrDatabaseNotOpen if accessed before Open() is called.
+// DB 存储了一堆文件桶。
 type DB struct {
 	// When enabled, the database will perform a Check() after every commit.
 	// A panic is issued if the database is in an inconsistent state. This
 	// flag has a large performance impact so it should only be used for
 	// debugging purposes.
+	// 单步调试模式。
 	StrictMode bool
 
 	// Setting the NoSync flag will cause the database to skip fsync()
@@ -59,6 +71,7 @@ type DB struct {
 	// ignored.  See the comment on that constant for more details.
 	//
 	// THIS IS UNSAFE. PLEASE USE WITH CAUTION.
+	// 只有write，没有fsync。大概率刷到page cache等os 后台线程来执行刷盘。
 	NoSync bool
 
 	// When true, skips the truncate call when growing the database.
@@ -67,10 +80,16 @@ type DB struct {
 	// bypasses a truncate() and fsync() syscall on remapping.
 	//
 	// https://github.com/boltdb/bolt/issues/284
+	// 似乎是 非ext3/4文件系统在fdatasync()元数据更新之后才可以访问。
+	// 而ext3/4默认有序模式直接刷新data数据，之后再写元数据。
+	// 因此需要trunc来预分配硬件空间并且remap.
+	// 具体不清楚了。以后看看xfs在这里的可能性。
+	// truncate() 用于更改到指定数据大小的内容
 	NoGrowSync bool
 
 	// If you want to read the entire database fast, you can set MmapFlag to
 	// syscall.MAP_POPULATE on Linux 2.6.23+ for sequential read-ahead.
+	// MAP_POPULATE会做数据预读
 	MmapFlags int
 
 	// MaxBatchSize is the maximum size of a batch. Default value is
@@ -79,6 +98,7 @@ type DB struct {
 	// If <=0, disables batching.
 	//
 	// Do not change concurrently with calls to Batch.
+	// 这个选项更改时不能调用批处理。
 	MaxBatchSize int
 
 	// MaxBatchDelay is the maximum delay before a batch starts.
@@ -92,40 +112,77 @@ type DB struct {
 	// AllocSize is the amount of space allocated when the database
 	// needs to create new pages. This is done to amortize the cost
 	// of truncate() and fsync() when growing the data file.
+	// page这里db默认用的16MB
 	AllocSize int
 
-	path     string
-	file     *os.File
-	lockfile *os.File // windows only
-	dataref  []byte   // mmap'ed readonly, write throws SEGV
-	data     *[maxMapSize]byte
-	datasz   int
-	filesz   int // current on disk file size
-	meta0    *meta
-	meta1    *meta
-	pageSize int
-	opened   bool
-	rwtx     *Tx
-	txs      []*Tx
-	freelist *freelist
-	stats    Stats
+	//数据库路径
+	path string
 
+	// 所读文件
+	file *os.File
+
+	lockfile *os.File // windows only
+
+	// 只读文件
+	dataref []byte // mmap'ed readonly, write throws SEGV
+
+	// 256TB字节大小
+	data *[maxMapSize]byte
+
+	// 数据库大小
+	datasz int
+
+	// 磁盘文件大小
+	filesz int // current on disk file size
+
+	// 元数据
+	meta0 *meta
+	meta1 *meta
+
+	// 数据页大小
+	pageSize int
+
+	// 是否调用 open
+	opened bool
+
+	//读写事务
+	rwtx *Tx
+
+	// 事务数据
+	txs []*Tx
+
+	// 缓冲池中的freelist
+	freelist *freelist
+
+	stats Stats
+
+	// 缓冲池(支持并发)
 	pagePool sync.Pool
 
+	// 批处理锁
 	batchMu sync.Mutex
 	batch   *batch
 
-	rwlock   sync.Mutex   // Allows only one writer at a time.
-	metalock sync.Mutex   // Protects meta page access.
+	// 访问数据库这个锁还不清楚啥含义
+	rwlock sync.Mutex // Allows only one writer at a time.
+
+	// 元数据锁(单个线程)
+	metalock sync.Mutex // Protects meta page access.
+
+	// 读写锁
 	mmaplock sync.RWMutex // Protects mmap access during remapping.
+
+	// 读写锁
 	statlock sync.RWMutex // Protects stats access.
 
 	ops struct {
 		writeAt func(b []byte, off int64) (n int, err error)
+		// 提供 按offset写数据的接口
 	}
 
 	// Read only mode.
 	// When true, Update() and Begin(true) return ErrDatabaseReadOnly immediately.
+	// 开启只读模式数据库
 	readOnly bool
 }
 
@@ -147,6 +204,7 @@ func (db *DB) String() string {
 // Open creates and opens a database at the given path.
 // If the file does not exist then it will be created automatically.
 // Passing in nil options will cause Bolt to open the database with the default options.
+// 按用户options 和 文件模式 在path路径读取DB。
 func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	var db = &DB{opened: true}
 
@@ -162,6 +220,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	db.MaxBatchDelay = DefaultMaxBatchDelay
 	db.AllocSize = DefaultAllocSize
 
+	// 默认开读写模式
 	flag := os.O_RDWR
 	if options.ReadOnly {
 		flag = os.O_RDONLY
@@ -171,6 +230,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	// Open data file and separate sync handler for metadata writes.
 	db.path = path
 	var err error
+	// create a new file if none exists.
 	if db.file, err = os.OpenFile(db.path, flag|os.O_CREATE, mode); err != nil {
 		_ = db.close()
 		return nil, err
@@ -183,12 +243,14 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	// if !options.ReadOnly.
 	// The database file is locked using the shared lock (more than one process may
 	// hold a lock at the same time) otherwise (options.ReadOnly is set).
+	// 以共享还是独占的方式访问该数据库文件。并且指定等待时间
 	if err := flock(db, mode, !db.readOnly, options.Timeout); err != nil {
 		_ = db.close()
 		return nil, err
 	}
 
 	// Default values for test hooks
+	// fs提供的默认write接口
 	db.ops.writeAt = db.file.WriteAt
 
 	// Initialize the database if it doesn't exist.
@@ -196,6 +258,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		return nil, err
 	} else if info.Size() == 0 {
 		// Initialize new files with meta pages.
+		// info为0 说明是刚创建db
 		if err := db.init(); err != nil {
 			return nil, err
 		}
@@ -340,6 +403,7 @@ func (db *DB) mmapSize(size int) (int, error) {
 }
 
 // init creates a new database file and initializes its meta pages.
+// 初始化 db
 func (db *DB) init() error {
 	// Set the page size to the OS page size.
 	db.pageSize = os.Getpagesize()
@@ -687,10 +751,17 @@ type call struct {
 	err chan<- error
 }
 
+// 批处理的信息
 type batch struct {
-	db    *DB
+	db *DB
+
+	// 计时器
 	timer *time.Timer
+
+	// 同步器
 	start sync.Once
+
+	// caller
 	calls []call
 }
 
@@ -892,10 +963,12 @@ func (db *DB) IsReadOnly() bool {
 }
 
 // Options represents the options that can be set when opening a database.
+// open database 使用的 用户定义选项。
 type Options struct {
 	// Timeout is the amount of time to wait to obtain a file lock.
 	// When set to zero it will wait indefinitely. This option is only
 	// available on Darwin and Linux.
+	// 获取文件锁的超时时长
 	Timeout time.Duration
 
 	// Sets the DB.NoGrowSync flag before memory mapping the file.
@@ -903,15 +976,19 @@ type Options struct {
 
 	// Open database in read-only mode. Uses flock(..., LOCK_SH |LOCK_NB) to
 	// grab a shared lock (UNIX).
+	// 在open()中将使用flock根据该参数申请文件锁。
 	ReadOnly bool
 
 	// Sets the DB.MmapFlags flag before memory mapping the file.
+	// 否则对该文件不适用mmap
 	MmapFlags int
 
 	// InitialMmapSize is the initial mmap size of the database
 	// in bytes. Read transactions won't block write transaction
 	// if the InitialMmapSize is large enough to hold database mmap
 	// size. (See DB.Begin for more information)
+	// 读事务如果initial mmap size足够存放数据库mmap大小的话，将不会阻塞写事务。
+	// 实际上是指，整个db的大小是否能存储这些事务的容量情况。
 	//
 	// If <=0, the initial map size is 0.
 	// If initialMmapSize is smaller than the previous database size,
@@ -922,22 +999,28 @@ type Options struct {
 // DefaultOptions represent the options used if nil options are passed into Open().
 // No timeout is used which will cause Bolt to wait indefinitely for a lock.
 var DefaultOptions = &Options{
-	Timeout:    0,
+	// 如果得不到文件锁，会一直阻塞
+	Timeout: 0,
+	// 执行 truncate and sync when grows
 	NoGrowSync: false,
 }
 
 // Stats represents statistics about the database.
+// 表示数据库状态
 type Stats struct {
 	// Freelist stats
+	// 属于freelist的一些元信息
 	FreePageN     int // total number of free pages on the freelist
 	PendingPageN  int // total number of pending pages on the freelist
 	FreeAlloc     int // total bytes allocated in free pages
 	FreelistInuse int // total bytes used by the freelist
 
 	// Transaction stats
+	// 事务统计信息
 	TxN     int // total number of started read transactions
 	OpenTxN int // number of currently open read transactions
 
+	// 全局统计信息
 	TxStats TxStats // global, ongoing stats.
 }
 
@@ -967,15 +1050,27 @@ type Info struct {
 	PageSize int
 }
 
+// 元数据信息
 type meta struct {
-	magic    uint32
-	version  uint32
+	magic uint32
+
+	// 版本
+	version uint32
+
+	// 页大小
 	pageSize uint32
 	flags    uint32
-	root     bucket
+
+	// 表示元数据存储的桶
+	root bucket
+
 	freelist pgid
-	pgid     pgid
-	txid     txid
+
+	// 分配的事务id，页id
+	pgid pgid
+	txid txid
+
+	// 计算和
 	checksum uint64
 }
 

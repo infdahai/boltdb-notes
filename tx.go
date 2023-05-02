@@ -21,14 +21,28 @@ type txid uint64
 // them. Pages can not be reclaimed by the writer until no more transactions
 // are using them. A long running read transaction can cause the database to
 // quickly grow.
+// pages只有在没有事务工作情况下，才能释放。
+// 因此长期读的事务将会导致数据库快速增长。
 type Tx struct {
-	writable       bool
-	managed        bool
-	db             *DB
-	meta           *meta
-	root           Bucket
-	pages          map[pgid]*page
-	stats          TxStats
+	// 只读或者读写事务 flag
+	writable bool
+
+	managed bool
+
+	// 数据库的指针
+	db *DB
+
+	// 元信息
+	meta *meta
+
+	root Bucket
+
+	// 事务所涉及的数据页
+	pages map[pgid]*page
+
+	// 事务状态(commit | rollback)
+	stats TxStats
+
 	commitHandlers []func()
 
 	// WriteFlag specifies the flag for write-related methods like WriteTo().
@@ -37,6 +51,9 @@ type Tx struct {
 	// By default, the flag is unset, which works well for mostly in-memory
 	// workloads. For databases that are much larger than available RAM,
 	// set the flag to syscall.O_DIRECT to avoid trashing the page cache.
+	// 跳过缓冲区高速缓存,避免（按顺序预读取，在成簇磁盘块上执行IO，
+	// 允许访问同一文件的多个进程共享高速缓存的缓冲区）优化。主要应用于大数据直刷。
+	// 不适用 缓存拷贝写数据。
 	WriteFlag int
 }
 
@@ -624,6 +641,7 @@ func (tx *Tx) Page(id int) (*PageInfo, error) {
 }
 
 // TxStats represents statistics about the actions performed by the transaction.
+// 用于统计全局操作信息
 type TxStats struct {
 	// Page statistics.
 	PageCount int // number of page allocations

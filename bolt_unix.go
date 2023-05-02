@@ -12,23 +12,30 @@ import (
 )
 
 // flock acquires an advisory lock on a file descriptor.
+// unix实现flock
 func flock(db *DB, mode os.FileMode, exclusive bool, timeout time.Duration) error {
 	var t time.Time
 	for {
 		// If we're beyond our timeout then return an error.
 		// This can only occur after we've attempted a flock once.
-		if t.IsZero() {
+		if t.IsZero() { // 检测初始化
 			t = time.Now()
 		} else if timeout > 0 && time.Since(t) > timeout {
+			// 锁超时
 			return ErrTimeout
 		}
+		//共享锁
 		flag := syscall.LOCK_SH
+		// 该工程都这样避免if-else分支
 		if exclusive {
+			//独占锁
 			flag = syscall.LOCK_EX
 		}
 
 		// Otherwise attempt to obtain an exclusive lock.
+		// 如果指定参数lock_nb，函数不能获得文件锁就立即返回，否则，函数会等待获得文件锁
 		err := syscall.Flock(int(db.file.Fd()), flag|syscall.LOCK_NB)
+
 		if err == nil {
 			return nil
 		} else if err != syscall.EWOULDBLOCK {
@@ -36,6 +43,7 @@ func flock(db *DB, mode os.FileMode, exclusive bool, timeout time.Duration) erro
 		}
 
 		// Wait for a bit and try again.
+		//0.05s 睡眠
 		time.Sleep(50 * time.Millisecond)
 	}
 }
